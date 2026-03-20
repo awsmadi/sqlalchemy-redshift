@@ -14,7 +14,6 @@ from sqlalchemy.dialects.postgresql.base import (PGCompiler, PGDDLCompiler,
                                                  PGTypeCompiler)
 from sqlalchemy.dialects.postgresql.psycopg2 import PGDialect_psycopg2
 from sqlalchemy.dialects.postgresql.psycopg2cffi import PGDialect_psycopg2cffi
-from sqlalchemy.engine import reflection
 from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.expression import (BinaryExpression, BooleanClauseList,
@@ -703,7 +702,6 @@ class RedshiftDialectMixin(DefaultDialect):
             **REDSHIFT_ISCHEMA_NAMES
         }
 
-    @reflection.cache
     def get_columns(self, connection, table_name, schema=None, **kw):
         """
         Return information about columns in `table_name`.
@@ -725,7 +723,6 @@ class RedshiftDialectMixin(DefaultDialect):
             columns.append(column_info)
         return columns
 
-    @reflection.cache
     def has_table(self, connection, table_name, schema=None, **kw):
         if not schema:
             schema = inspect(connection).default_schema_name
@@ -738,7 +735,6 @@ class RedshiftDialectMixin(DefaultDialect):
 
         return True if table else False
 
-    @reflection.cache
     def get_check_constraints(self, connection, table_name, schema=None, **kw):
         table_oid = self.get_table_oid(
             connection, table_name, schema, info_cache=kw.get("info_cache")
@@ -781,7 +777,6 @@ class RedshiftDialectMixin(DefaultDialect):
             ret.append(entry)
         return ret
 
-    @reflection.cache
     def get_table_oid(self, connection, table_name, schema=None, **kw):
         """Fetch the oid for schema.table_name.
         Return null if not found (external table does not have table oid)"""
@@ -800,7 +795,6 @@ class RedshiftDialectMixin(DefaultDialect):
 
         return result.scalar()
 
-    @reflection.cache
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         """
         Return information about the primary key constraint on `table_name`.
@@ -822,7 +816,6 @@ class RedshiftDialectMixin(DefaultDialect):
             'name': pk_constraint.conname,
         }
 
-    @reflection.cache
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
         """
         Return information about foreign keys in `table_name`.
@@ -856,7 +849,6 @@ class RedshiftDialectMixin(DefaultDialect):
             fkeys.append(fkey_d)
         return fkeys
 
-    @reflection.cache
     def get_table_names(self, connection, schema=None, **kw):
         """
         Return a list of table names for `schema`.
@@ -866,7 +858,6 @@ class RedshiftDialectMixin(DefaultDialect):
         """
         return self._get_table_or_view_names('r', connection, schema, **kw)
 
-    @reflection.cache
     def get_view_names(self, connection, schema=None, **kw):
         """
         Return a list of view names for `schema`.
@@ -876,7 +867,6 @@ class RedshiftDialectMixin(DefaultDialect):
         """
         return self._get_table_or_view_names('v', connection, schema, **kw)
 
-    @reflection.cache
     def get_view_definition(self, connection, view_name, schema=None, **kw):
         """Return view definition.
         Given a :class:`.Connection`, a string `view_name`,
@@ -900,7 +890,6 @@ class RedshiftDialectMixin(DefaultDialect):
         """
         return []
 
-    @reflection.cache
     def get_unique_constraints(self, connection, table_name,
                                schema=None, **kw):
         """
@@ -923,7 +912,6 @@ class RedshiftDialectMixin(DefaultDialect):
             for name, uc in uniques.items()
         ]
 
-    @reflection.cache
     def get_table_options(self, connection, table_name, schema, **kw):
         """
         Return a dictionary of options specified when the table of the
@@ -1092,7 +1080,6 @@ class RedshiftDialectMixin(DefaultDialect):
             key = key.unquoted()
         return all_constraints[key]
 
-    @reflection.cache
     def _get_all_relation_info(self, connection, **kw):
         schema = kw.get('schema', None)
         schema_clause = (
@@ -1153,7 +1140,6 @@ class RedshiftDialectMixin(DefaultDialect):
 
     # We fetch column info an entire schema at a time to improve performance
     # when reflecting schema for multiple tables at once.
-    @reflection.cache
     def _get_schema_column_info(self, connection, **kw):
         schema = kw.get('schema', None)
         schema_clause = (
@@ -1179,7 +1165,6 @@ class RedshiftDialectMixin(DefaultDialect):
 
         return dict(all_columns)
 
-    @reflection.cache
     def _get_all_constraint_info(self, connection, **kw):
         schema = kw.get('schema', None)
         schema_clause = (
@@ -1269,7 +1254,7 @@ class Psycopg2RedshiftDialectMixin(RedshiftDialectMixin):
         return cargs, default_args
 
     @classmethod
-    def dbapi(cls):
+    def import_dbapi(cls):
         try:
             return importlib.import_module(cls.driver)
         except ImportError:
@@ -1281,7 +1266,7 @@ class Psycopg2RedshiftDialectMixin(RedshiftDialectMixin):
 class RedshiftDialect_psycopg2(
     Psycopg2RedshiftDialectMixin, PGDialect_psycopg2
 ):
-    supports_statement_cache = False
+    supports_statement_cache = True
 
 
 # Add RedshiftDialect synonym for backwards compatibility.
@@ -1291,7 +1276,7 @@ RedshiftDialect = RedshiftDialect_psycopg2
 class RedshiftDialect_psycopg2cffi(
     Psycopg2RedshiftDialectMixin, PGDialect_psycopg2cffi
 ):
-    supports_statement_cache = False
+    supports_statement_cache = True
 
 
 class RedshiftDialect_redshift_connector(RedshiftDialectMixin, PGDialect):
@@ -1342,7 +1327,7 @@ class RedshiftDialect_redshift_connector(RedshiftDialectMixin, PGDialect):
     statement_compiler = RedshiftCompiler_redshift_connector
     execution_ctx_cls = RedshiftExecutionContext_redshift_connector
 
-    supports_statement_cache = False
+    supports_statement_cache = True
     use_setinputsizes = False  # not implemented in redshift_connector
 
     def __init__(self, client_encoding=None, **kwargs):
@@ -1352,7 +1337,7 @@ class RedshiftDialect_redshift_connector(RedshiftDialectMixin, PGDialect):
         self.client_encoding = client_encoding
 
     @classmethod
-    def dbapi(cls):
+    def import_dbapi(cls):
         try:
             driver_module = importlib.import_module(cls.driver)
 
@@ -1409,9 +1394,8 @@ class RedshiftDialect_redshift_connector(RedshiftDialectMixin, PGDialect):
         fns = []
 
         def on_connect(conn):
-            from sqlalchemy import util
             from sqlalchemy.sql.elements import quoted_name
-            conn.py_types[quoted_name] = conn.py_types[util.text_type]
+            conn.py_types[quoted_name] = conn.py_types[str]
 
         fns.append(on_connect)
 
