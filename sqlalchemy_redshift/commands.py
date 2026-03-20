@@ -25,9 +25,9 @@ SECRET_ACCESS_KEY_RE = re.compile('[A-Za-z0-9/+=]{40}')
 TOKEN_RE = re.compile('[A-Za-z0-9/+=]+')
 AWS_PARTITIONS = frozenset({'aws', 'aws-cn', 'aws-us-gov'})
 AWS_ACCOUNT_ID_RE = re.compile('[0-9]{12}')
-IAM_ROLE_NAME_RE = re.compile(r'[A-Za-z0-9+=,.@\-_]{1,64}')  # noqa
+IAM_ROLE_NAME_RE = re.compile(r'[A-Za-z0-9+=,.@\-_]{1,64}')
 IAM_ROLE_ARN_RE = re.compile(r'arn:(aws|aws-cn|aws-us-gov):iam::'
-                             r'[0-9]{12}:role/[A-Za-z0-9+=,.@\-_]{1,64}')  # noqa
+                             r'[0-9]{12}:role/[A-Za-z0-9+=,.@\-_]{1,64}')
 
 
 def _process_aws_credentials(access_key_id=None, secret_access_key=None,
@@ -273,7 +273,8 @@ class UnloadFromSelect(_ExecutableClause):
                  encrypted=False, gzip=False, add_quotes=False, null=None,
                  escape=False, allow_overwrite=False, parallel=True,
                  header=False, region=None, max_file_size=None,
-                 format=None, iam_role_arns=None):
+                 format=None, iam_role_arns=None, iam_role=None,
+                 partition_by=None):
 
         if delimiter is not None and len(delimiter) != 1:
             raise ValueError(
@@ -285,19 +286,29 @@ class UnloadFromSelect(_ExecutableClause):
                 "'header' cannot be used with 'fixed_width'"
             )
 
-        credentials = _process_aws_credentials(
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
-            session_token=session_token,
-            aws_partition=aws_partition,
-            aws_account_id=aws_account_id,
-            iam_role_name=iam_role_name,
-            iam_role_arns=iam_role_arns,
-        )
+        # Handle new iam_role parameter
+        self.iam_role = iam_role
+        if iam_role is not None:
+            if any([access_key_id, secret_access_key, aws_account_id,
+                    iam_role_name, iam_role_arns]):
+                raise TypeError(
+                    'iam_role cannot be used with other credential parameters'
+                )
+            self.credentials = None
+        else:
+            credentials = _process_aws_credentials(
+                access_key_id=access_key_id,
+                secret_access_key=secret_access_key,
+                session_token=session_token,
+                aws_partition=aws_partition,
+                aws_account_id=aws_account_id,
+                iam_role_name=iam_role_name,
+                iam_role_arns=iam_role_arns,
+            )
+            self.credentials = credentials
 
         self.select = select
         self.unload_location = unload_location
-        self.credentials = credentials
         self.manifest = manifest
         self.header = header
         self.format = _check_enum(Format, format)
@@ -312,15 +323,27 @@ class UnloadFromSelect(_ExecutableClause):
         self.parallel = parallel
         self.region = region
         self.max_file_size = max_file_size
+        self.partition_by = partition_by
 
 
 @sa_compiler.compiles(UnloadFromSelect)
 def visit_unload_from_select(element, compiler, **kw):
     """Returns the actual sql query for the UnloadFromSelect class."""
 
+    el = element
+
+    # Determine credential clause
+    if el.iam_role is not None:
+        if el.iam_role.lower() == 'default':
+            cred_clause = 'IAM_ROLE DEFAULT'
+        else:
+            cred_clause = 'IAM_ROLE :iam_role_arn'
+    else:
+        cred_clause = 'CREDENTIALS :credentials'
+
     template = """
        UNLOAD (:select) TO :unload_location
-       CREDENTIALS :credentials
+       {cred_clause}
        {manifest}
        {header}
        {format}
@@ -333,10 +356,10 @@ def visit_unload_from_select(element, compiler, **kw):
        {escape}
        {allow_overwrite}
        {parallel}
+       {partition_by}
        {region}
        {max_file_size}
     """
-    el = element
 
     if el.format is None:
         format_ = ''
@@ -361,6 +384,7 @@ def visit_unload_from_select(element, compiler, **kw):
         )
 
     qs = template.format(
+        cred_clause=cred_clause,
         manifest='MANIFEST' if el.manifest else '',
         header='HEADER' if el.header else '',
         format=format_,
@@ -375,6 +399,10 @@ def visit_unload_from_select(element, compiler, **kw):
         null='NULL AS :null_as' if el.null is not None else '',
         allow_overwrite='ALLOWOVERWRITE' if el.allow_overwrite else '',
         parallel='PARALLEL OFF' if not el.parallel else '',
+        partition_by=(
+            'PARTITION BY ({})'.format(', '.join(el.partition_by))
+            if el.partition_by else ''
+        ),
         region='REGION :region' if el.region is not None else '',
         max_file_size=(
             'MAXFILESIZE :max_file_size MB'
@@ -412,21 +440,33 @@ def visit_unload_from_select(element, compiler, **kw):
             'max_file_size', value=max_file_size_mib, type_=sa.Float
         ))
 
-    return compiler.process(
-        query.bindparams(
-            sa.bindparam('credentials', value=el.credentials, type_=sa.String),
-            sa.bindparam(
-                'unload_location', value=el.unload_location, type_=sa.String,
-            ),
-            sa.bindparam(
-                'select',
-                value=compiler.process(
-                    el.select,
-                    literal_binds=True,
-                ),
-                type_=sa.String,
-            ),
+    # Build bindparams list
+    bindparams = [
+        sa.bindparam(
+            'unload_location', value=el.unload_location, type_=sa.String,
         ),
+        sa.bindparam(
+            'select',
+            value=compiler.process(
+                el.select,
+                literal_binds=True,
+            ),
+            type_=sa.String,
+        ),
+    ]
+
+    # Add credential binding
+    if el.iam_role is not None and el.iam_role.lower() != 'default':
+        bindparams.append(
+            sa.bindparam('iam_role_arn', value=el.iam_role, type_=sa.String)
+        )
+    elif el.credentials is not None:
+        bindparams.append(
+            sa.bindparam('credentials', value=el.credentials, type_=sa.String)
+        )
+
+    return compiler.process(
+        query.bindparams(*bindparams),
         **kw
     )
 
@@ -621,17 +661,27 @@ class CopyCommand(_ExecutableClause):
                  roundec=False, time_format=None, trim_blanks=False,
                  truncate_columns=False, comp_rows=None, comp_update=None,
                  max_error=None, no_load=False, stat_update=None,
-                 manifest=False, region=None, iam_role_arns=None):
+                 manifest=False, region=None, iam_role_arns=None, iam_role=None):
 
-        credentials = _process_aws_credentials(
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
-            session_token=session_token,
-            aws_partition=aws_partition,
-            aws_account_id=aws_account_id,
-            iam_role_name=iam_role_name,
-            iam_role_arns=iam_role_arns,
-        )
+        # Handle new iam_role parameter
+        self.iam_role = iam_role
+        if iam_role is not None:
+            if any([access_key_id, secret_access_key, aws_account_id,
+                    iam_role_name, iam_role_arns]):
+                raise TypeError(
+                    'iam_role cannot be used with other credential parameters'
+                )
+            credentials = None
+        else:
+            credentials = _process_aws_credentials(
+                access_key_id=access_key_id,
+                secret_access_key=secret_access_key,
+                session_token=session_token,
+                aws_partition=aws_partition,
+                aws_account_id=aws_account_id,
+                iam_role_name=iam_role_name,
+                iam_role_arns=iam_role_arns,
+            )
 
         if delimiter is not None and len(delimiter) != 1:
             raise ValueError('"delimiter" parameter must be a single '
@@ -700,8 +750,17 @@ def visit_copy_command(element, compiler, **kw):
     """
     Returns the actual sql query for the CopyCommand class.
     """
+    # Determine credential clause
+    if element.iam_role is not None:
+        if element.iam_role.lower() == 'default':
+            cred_clause = 'IAM_ROLE DEFAULT'
+        else:
+            cred_clause = 'IAM_ROLE :iam_role_arn'
+    else:
+        cred_clause = 'WITH CREDENTIALS AS :credentials'
+
     qs = """COPY {table}{columns} FROM :data_location
-        WITH CREDENTIALS AS :credentials
+        {cred_clause}
         {format}
         {parameters}"""
     parameters = []
@@ -711,12 +770,21 @@ def visit_copy_command(element, compiler, **kw):
             value=element.data_location,
             type_=sa.String,
         ),
-        sa.bindparam(
-            'credentials',
-            value=element.credentials,
-            type_=sa.String,
-        ),
     ]
+
+    # Add credential binding
+    if element.iam_role is not None and element.iam_role.lower() != 'default':
+        bindparams.append(
+            sa.bindparam('iam_role_arn', value=element.iam_role, type_=sa.String)
+        )
+    elif element.credentials is not None:
+        bindparams.append(
+            sa.bindparam(
+                'credentials',
+                value=element.credentials,
+                type_=sa.String,
+            )
+        )
 
     if element.format == Format.csv:
         format_ = 'FORMAT AS CSV'
@@ -888,6 +956,7 @@ def visit_copy_command(element, compiler, **kw):
     qs = qs.format(
         table=compiler.preparer.format_table(element.table),
         columns=columns,
+        cred_clause=cred_clause,
         format=format_,
         parameters='\n'.join(parameters)
     )

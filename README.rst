@@ -46,6 +46,41 @@ See the `RedshiftDDLCompiler documentation
 <https://sqlalchemy-redshift.readthedocs.org/en/latest/ddl-compiler.html>`_
 for details on Redshift-specific features the dialect supports.
 
+COPY and UNLOAD
+~~~~~~~~~~~~~~~
+
+The dialect provides ``CopyCommand`` and ``UnloadFromSelect`` for Redshift's
+COPY and UNLOAD statements. Authentication can use access keys, IAM role ARNs,
+or ``IAM_ROLE DEFAULT``::
+
+    from sqlalchemy_redshift.commands import CopyCommand, UnloadFromSelect
+
+    # COPY with direct IAM role ARN
+    copy = CopyCommand(
+        table,
+        data_location='s3://bucket/key',
+        iam_role='arn:aws:iam::123456789012:role/MyRole',
+    )
+
+    # COPY with IAM_ROLE DEFAULT (uses the cluster's default role)
+    copy = CopyCommand(
+        table,
+        data_location='s3://bucket/key',
+        iam_role='default',
+    )
+
+    # UNLOAD with PARTITION BY
+    unload = UnloadFromSelect(
+        select(table),
+        unload_location='s3://bucket/prefix',
+        iam_role='default',
+        partition_by=['region', 'year'],
+    )
+
+The ``iam_role`` parameter generates clean ``IAM_ROLE`` syntax instead of the
+older ``WITH CREDENTIALS AS`` pattern. Existing access key and
+``iam_role_arns`` parameters continue to work for backward compatibility.
+
 Materialized Views
 ~~~~~~~~~~~~~~~~~~
 
