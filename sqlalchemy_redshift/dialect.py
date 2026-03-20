@@ -582,6 +582,19 @@ class RedshiftDDLCompiler(PGDDLCompiler):
         info = {key: info.get(key) for key in kwargs}
         return get_table_attributes(self.preparer, **info)
 
+    def visit_foreign_key_constraint(self, constraint, **kw):
+        """Redshift does not support ON DELETE/ON UPDATE actions on FK constraints."""
+        orig_ondelete = constraint.ondelete
+        orig_onupdate = constraint.onupdate
+        constraint.ondelete = None
+        constraint.onupdate = None
+        try:
+            result = super().visit_foreign_key_constraint(constraint, **kw)
+        finally:
+            constraint.ondelete = orig_ondelete
+            constraint.onupdate = orig_onupdate
+        return result
+
     def get_column_specification(self, column, **kwargs):
         colspec = self.preparer.format_column(column)
 
@@ -595,6 +608,12 @@ class RedshiftDDLCompiler(PGDDLCompiler):
                 colspec += " IDENTITY({seed},{step})".format(**m.groupdict())
             else:
                 colspec += " DEFAULT " + default
+
+        # Handle autoincrement=True -> IDENTITY(1,1)
+        if column.autoincrement is True and default is None:
+            info = column.dialect_options.get('redshift', {})
+            if not info.get('identity'):
+                colspec += " IDENTITY(1,1)"
 
         colspec += self._fetch_redshift_column_attributes(column)
 
@@ -662,6 +681,19 @@ class RedshiftDialectMixin(DefaultDialect):
     ddl_compiler = RedshiftDDLCompiler
     preparer = RedshiftIdentifierPreparer
     type_compiler = RedshiftTypeCompiler
+
+    # Redshift does not support sequences
+    supports_sequences = False
+
+    # Redshift uses CTE-follows-INSERT syntax
+    cte_follows_insert = True
+
+    # Redshift does not support RETURNING clause
+    implicit_returning = False
+    insert_returning = False
+    update_returning = False
+    delete_returning = False
+
     construct_arguments = [
         (sa.schema.Index, {
             "using": False,
