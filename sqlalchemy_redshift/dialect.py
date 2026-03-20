@@ -199,7 +199,7 @@ REFLECTION_SQL = """\
         ON att.attrelid = c.oid
     LEFT JOIN pg_catalog.pg_attrdef ad
         ON (att.attrelid, att.attnum) = (ad.adrelid, ad.adnum)
-    WHERE n.nspname !~ '^pg_'
+    WHERE (n.nspname !~ '^pg_' OR n.nspname ~ '^pg_temp_')
         AND att.attnum > 0
         AND NOT att.attisdropped
         {schema_clause} {table_clause}
@@ -215,7 +215,7 @@ REFLECTION_SQL = """\
         null as "notnull",
         null as "comment",
         null as "adsrc",
-        null as "attnum",
+        col_num as "attnum",
         col_type as "format_type",
         null as "default",
         null as "schema_oid",
@@ -782,18 +782,20 @@ class RedshiftDialectMixin(DefaultDialect):
         Return null if not found (external table does not have table oid)"""
         schema_field = '"{schema}".'.format(schema=schema) if schema else ""
 
-        result = connection.execute(
-            sa.text(
-                """
-                select '{schema_field}"{table_name}"'::regclass::oid;
-                """.format(
-                    schema_field=schema_field,
-                    table_name=table_name
+        try:
+            result = connection.execute(
+                sa.text(
+                    """
+                    select '{schema_field}"{table_name}"'::regclass::oid;
+                    """.format(
+                        schema_field=schema_field,
+                        table_name=table_name
+                    )
                 )
             )
-        )
-
-        return result.scalar()
+            return result.scalar()
+        except Exception:
+            return None
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         """
@@ -1048,8 +1050,10 @@ class RedshiftDialectMixin(DefaultDialect):
                                                     table_name=table_name,
                                                     info_cache=info_cache)
         key = RelationKey(table_name, schema, connection)
-        if key not in all_relations.keys():
+        if key not in all_relations:
             key = key.unquoted()
+        if key not in all_relations:
+            key = RelationKey(table_name.lower(), schema, connection)
         try:
             return all_relations[key]
         except KeyError:
@@ -1064,8 +1068,10 @@ class RedshiftDialectMixin(DefaultDialect):
             info_cache=info_cache
         )
         key = RelationKey(table_name, schema, connection)
-        if key not in all_schema_columns.keys():
+        if key not in all_schema_columns:
             key = key.unquoted()
+        if key not in all_schema_columns:
+            key = RelationKey(table_name.lower(), schema, connection)
         return all_schema_columns[key]
 
     def _get_redshift_constraints(self, connection, table_name,
@@ -1076,8 +1082,10 @@ class RedshiftDialectMixin(DefaultDialect):
                                                         table_name=table_name,
                                                         info_cache=info_cache)
         key = RelationKey(table_name, schema, connection)
-        if key not in all_constraints.keys():
+        if key not in all_constraints:
             key = key.unquoted()
+        if key not in all_constraints:
+            key = RelationKey(table_name.lower(), schema, connection)
         return all_constraints[key]
 
     def _get_all_relation_info(self, connection, **kw):
@@ -1112,7 +1120,7 @@ class RedshiftDialectMixin(DefaultDialect):
              LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
              JOIN pg_catalog.pg_user u ON u.usesysid = c.relowner
         WHERE c.relkind IN ('r', 'v', 'm', 'S', 'f')
-          AND n.nspname !~ '^pg_' {schema_clause} {table_clause}
+          AND (n.nspname !~ '^pg_' OR n.nspname ~ '^pg_temp_') {schema_clause} {table_clause}
         UNION
         SELECT
             'r' AS "relkind",
@@ -1197,7 +1205,7 @@ class RedshiftDialectMixin(DefaultDialect):
           ON t.conrelid = c.oid
         JOIN pg_catalog.pg_attribute a
           ON t.conrelid = a.attrelid AND a.attnum = ANY(t.conkey)
-        WHERE n.nspname !~ '^pg_' {schema_clause} {table_clause}
+        WHERE (n.nspname !~ '^pg_' OR n.nspname ~ '^pg_temp_') {schema_clause} {table_clause}
         UNION
         SELECT
             s.schemaname AS "schema",
